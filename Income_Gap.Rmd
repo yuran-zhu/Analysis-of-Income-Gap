@@ -1,0 +1,642 @@
+---
+title: "Final Project: Analysis of Income Gap"
+author: "Yuran Zhu"
+date: ''
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(GGally)
+library(knitr)
+options(scipen=5)
+```
+
+This report uses the NLSY79 (National Longitudinal Survey of Youth, 1979 cohort) data set, aiming to identify whether there is a significant difference in income between men and women, as well as to investigate other factors that lead to income difference.
+
+### 1. Data Summary
+
+```{r}
+# Import starting data
+nlsy.data <- read.csv("http://www.andrew.cmu.edu/user/achoulde/94842/final_project/nlsy79/nlsy79_income.csv", header=TRUE)
+```
+
+#### Choose variables 
+
+According to the variable description file, this report will focus on those variables: gender, race, marital status, years of education, region of current residence, number of jobs, family poverty status in 1978 (serves as an indicator for childhood household condition), and family size,along with the outcome variable, income (surveyed in 2012). We retrieve those variables into a new data frame called `nlsy`. We can have a quick look of the structure of the data frame.
+
+```{r}
+# Pull out columns we need
+nlsy <- nlsy.data %>%
+  select(c(R0214800, R0214700, R7007000, T4113000, T4112700, T4114900, R0217910, T4112200, T3977400))
+
+# Change column names to be more descriptive
+colnames(nlsy) <- c("gender",
+    "race",
+    "marital.status",
+    "education",
+    "region",
+    "job.number",
+    "family.poverty.status",
+    "family.size",
+    "income")
+
+# Dispaly the structure of the data frame
+str(nlsy)  
+```
+
+2 problems are noticed and need to be fixed: (1) Negative values; (2) Integer values coding for factor variables.
+
+The description says that the numbers -1, -2, -4 and -5 denote different types of missingness. Considering that nobody refuses to answer questions related to the variables we selected other than `income`, in this scenaria, those different missigness indicators may not be somewhat informative. Therefore, we can recode all of these negatives values to `NA`. 
+
+```{r}
+# Set all negative values to NA
+nlsy[nlsy < 0] <- NA
+```
+
+#### Deal with missing values
+
+For numeric variables (`education`, `job.number`, `family.size`) that have `NA`, it's none sense of including them in further regression analysis, so next drop all the `NA` for numeric variables and save data into `nlsy.1`.  
+
+```{r}
+nlsy.1 <- subset(nlsy, income != "NA") %>% subset(education != "NA") %>% subset(job.number != "NA") %>% subset(family.size != "NA")
+```
+
+Then exclude all missing values for factor variables and save data into `nlsy.2`. 
+
+```{r}
+## Remove all rows containing NA
+nlsy.2 <- na.omit(nlsy.1)
+```
+
+The number of records that factor variables contain `NA` is `r nrow(nlsy.1) - nrow(nlsy.2)`. To identify whether we should exclude all `NA` or not, first conducted t-test on two data sets.
+
+```{r}
+nlsy.1.ttest <- t.test(data = nlsy.1, income ~ gender)
+nlsy.1.ttest
+```
+For `nlsy.1` data, the t-test result indicates that the income difference is highly significant. The mean income in males is 53445.91, the mean income in females is 29538.51.
+
+```{r}
+t.test(data = nlsy.2, income ~ gender)
+```
+For `nlsy.2` data, the t-test result also indicates that the income difference is highly significant. The mean income in males is 55219.16, the mean income in females is  30171.89, which is not so differnent compared to `nlsy.1` data.
+
+Then compare the summary of `income` of both data sets.
+```{r}
+summary(nlsy.1$income)
+```
+
+```{r}
+summary(nlsy.2$income)
+```
+
+It appears to be not significant differences in `median` and `mean` for income in two data frames, which means excluding all missing values may not change our future analysis much. 
+
+Therefore, we'll conduct summary and analysis based on data that exclude all mising values. In this way, the means of income in male and female will not change significantly. Also it won't affect considering variables that impact income gap, so the linear regression model we finally come up may not be impacted.
+
+#### Assign factor levels
+
+The default coding uses numeric values to identify different levels for factor variables, which is inappropriate for linear regression analysis. In order to make it more meaningful, we recode the following variables and differentiate factor levels with reference to variable description. 
+
+In the process, the baseline levels have also been setted. The report chooses `Male`(gender), `Other`(race), `Married`(marital status), `Northeast`(region), `No`(family poverty status) as baseline. 
+
+```{r}
+# For factor variables (gender, marital status, region, family poverty status), assign meaningful factor levels
+nlsy.2 <- nlsy.2 %>%
+  mutate(gender = recode_factor(gender,`1` = "Male", `2` = "Female"),
+         race = recode_factor(race, `3` = "Other", `1` = "Hispanic", `2` = "Black"),  # set "Other" as the baseline
+         marital.status = recode_factor(marital.status, `1` = "Married", `0` = "Never Married", `2` = "Separated", `3` = "Divorced", `6` = "Widowed"),
+         region = recode_factor(region, `1` = "Northeast", `2` = "North central", `3` = "South", `4` = "West"),
+         family.poverty.status = recode_factor(family.poverty.status, `0` = "No", `1` = "Yes"))
+```
+
+
+####  Deal with topcoded values
+
+```{r}
+summary(nlsy.2$income)
+```
+
+
+It shows the income distribution among all the valid respondents. We can identify  the minimun income reported is 0, the median is 30000, the mean is 42321. Even though it shows the maximun value is 343830, this value is topcoded as a result of top 2% earners, which needs to be handled.
+
+```{r}
+qplot(nlsy.2$income, xlab = "Income", ylab = "Count")
+```
+
+
+First, run a regression on all variables with data and containg topcoded value.
+
+```{r}
+# Regress on all variables
+nlsy.lm.1 <- lm(income ~ ., data = nlsy.2)
+summary(nlsy.lm.1)   # all significant except a few levels
+```
+
+The summary indicates the coefficients of all the variables are significant, meaning these variables will impact income. 
+
+```{r}
+plot(nlsy.lm.1)
+```
+
+**Residuals vs. Fitted** reveals some non-constant variance and slight non-linearity. In **Normal QQ plot**, the residuals appear highly non-normal, the upper tail are heavier than we would expect under normality. 
+
+Then, exclude topcoded values and run the same regression again.
+
+```{r}
+income.max <- max(nlsy.2["income"], na.rm = TRUE)
+nlsy.3 <- nlsy.2 %>%
+  filter(income != income.max)
+
+nlsy.lm.2 <- lm(income ~ ., data = nlsy.3)
+summary(nlsy.lm.2)   
+```
+
+The coefficients of all the variables are also signigicant except `family.size`, their values change a lot compared to the previous regression.
+
+```{r}
+plot(nlsy.lm.2)
+```
+
+Without topcoded values, **Residuals vs. Fitted** reveals slight non-linearity, but non-variance has been fixed. In **Normal QQ plot**, the residuals appear more normal than previous regression. It's evident that tepcoded values impact the analysis result.
+
+Considering the topcoded values disturb the income distribution - some values are coded as larger than real, some are coded smaller than real, including topcoded values may lead to the model that doesn'y fit the reality. Therefore, the tepcode values should be excluded. We can then get resulting analysis based on original values and make it more appropiate for explaing the real situation.
+
+
+
+
+#### Graphical and tabular summaries of the data
+
+**(a)** Diagnose collinearity among variables
+
+```{r}
+
+# Use panel.cor to display correlations in bottom panel
+nlsy.var.names <- c("gender",
+    "race",
+    "marital.status",
+    "education",
+    "region",
+    "job.number",
+    "family.poverty.status",
+    "family.size")
+ggpairs(nlsy.3[,nlsy.var.names], axisLabels = "internal")
+```
+
+Using ggpairs() to generate diagonal plots, we can observe there doesn't exist collinearity among variables we selected, which is good for running regression.
+
+
+**(b)** Summary for variables
+
+First, we can have a look at the two main variables we're interested: `gender` and `income`
+
+```{r}
+table(nlsy.3$gender)
+```
+
+Quick look of gender distribution among all respondents. It appears to be a comparatively evenly distributed between males and females.
+
+```{r}
+summary(nlsy.3$income)
+```
+
+It shows the max valid income is 178000.
+
+```{r}
+qplot(nlsy.3$income, xlab = "Income", ylab = "Count")
+```
+
+A more direct figure to see how income distributes. The income distributing is right-skewed as we might expect based on common sense. 
+
+
+```{r}
+ggplot(nlsy.3, aes(x = gender, y = income)) +
+  geom_boxplot() +
+  scale_y_continuous(breaks = c(1000, 10000, 25000, 50000, 75000, 100000, 150000))
+```
+
+From this boxplot, we can find there exist discernable income differences among males and females in terms of median and quartiles, which indicates there's a income gap between men and women.
+
+We then explore other variables.
+
+```{r}
+summary(nlsy.3)
+```
+
+Using this summary, for factor variables, we can identify the distribution of each factor level, for numeric variable, we can get to know some statistical characteristics of them. The following figures shows the distribution in a clearer way.
+
+```{r}
+par(mfrow = c(3,2))
+hist(nlsy.3$education, xlab = "Education", ylab = "Count", main = "Histogram for education") 
+hist(nlsy.3$job.number, xlab = "Number of previous jobs", ylab = "Count", main = "Histogram for number of previous jobs")
+hist(nlsy.3$family.size, xlab = "Family size", ylab = "Count", main = "Histogram for family size")
+plot(nlsy.3$race, xlab = "Race", ylab = "Count",main = "Race distribution")
+plot(nlsy.3$region, xlab = "Region", ylab = "Count", main = "Region distribution")
+plot(nlsy.3$family.poverty.status, xlab = "Family porvety status", ylab = "Count", main = "Family poverty status distribution")
+```
+
+
+**(c)** Investigate variables that may impact income gap
+
+In this part, the report identifies potential impacts of varibales on the income gap. For factor variables, we'll refer to boxplots and bar charts with showing error bars. For numeric factors, the report uses scatter plots to show. 
+
+**Impact of `race` on income gap**
+```{r, fig.width = 8, fig.height = 4}
+library(gridExtra)
+race.inc.gap <- nlsy.3 %>%
+  group_by(race) %>%
+  summarize(male.count = sum(gender == "Male"),
+            female.count = sum(gender == "Female"),
+            income.gap = t.test(income ~ gender)$estimate[1] -
+              t.test(income ~ gender)$estimate[2],
+            lower = t.test(income ~ gender)$conf.int[1],
+            upper = t.test(income ~ gender)$conf.int[2],
+            is.significant = as.numeric(t.test(income ~ gender)$p.value < 0.05))
+race.inc.gap
+
+race.inc.box <- ggplot(nlsy.3, aes(x = race, y = income)) +
+  geom_boxplot() +
+  guides(fill = FALSE) +
+  scale_y_continuous(breaks = c(1000, 10000, 25000, 50000, 75000, 100000, 150000))  
+
+race.inc.bar <- ggplot(race.inc.gap, aes(x = race, y = income.gap, fill = is.significant)) +
+  geom_bar(stat = "identity") +
+  xlab("Race") + 
+  ylab("Income gap($)") +
+  ggtitle("Income gap between men and women,
+          by race") + 
+  guides(fill = FALSE) +
+  geom_errorbar(aes(ymax = upper, ymin = lower), width = 0.1, size = 1) +
+  theme(text = element_text(size=10))
+
+grid.arrange(race.inc.box, race.inc.bar, ncol = 2)
+```
+
+It seems that `race` may impact income gap. In race `other`, income gap reaches the largest; in race `black`, income gap is the smallest. For `hispanic`race, we see the largest error bars, so the mean of income difference is less reliable.
+
+**Impact of `marital.status` on income gap**
+
+```{r, fig.width = 8, fig.height = 4}
+marital.status.inc.gap <- nlsy.3 %>%
+  group_by(marital.status) %>%
+  summarize(male.count = sum(gender == "Male"),
+            female.count = sum(gender == "Female"),
+            income.gap = t.test(income ~ gender)$estimate[1] -
+              t.test(income ~ gender)$estimate[2],
+            lower = t.test(income ~ gender)$conf.int[1],
+            upper = t.test(income ~ gender)$conf.int[2],
+            is.significant = as.numeric(t.test(income ~ gender)$p.value < 0.05))
+marital.status.inc.gap
+
+marital.status.inc.box <- ggplot(na.omit(nlsy.3), aes(x = marital.status, y = income)) +
+  geom_boxplot() +
+  guides(fill = FALSE) +
+  scale_y_continuous(breaks = c(1000, 10000, 25000, 50000, 75000, 100000, 150000))  
+
+marital.status.inc.bar <- ggplot(marital.status.inc.gap, aes(x = marital.status, y = income.gap, fill = is.significant)) +
+  geom_bar(stat = "identity") +
+  xlab("Marital Status") + 
+  ylab("Income gap($)") +
+  ggtitle("Income gap between men and women, 
+          by marital status") + 
+  guides(fill = FALSE) +
+  geom_errorbar(aes(ymax = upper, ymin = lower), width = 0.1, size = 1) +
+  theme(text = element_text(size=10))
+
+grid.arrange(marital.status.inc.box, marital.status.inc.bar, ncol = 2)
+```
+
+It seems that `marital.status` may impact income gap. The income gap is the largest for `married` people. We notice huge error bar in `widowed` people, which means the difference is the least reliable, it may be due to the little count of poeple in this group.
+
+**Impact of `region` on income gap**
+
+```{r, fig.width = 8, fig.height = 4}
+region.inc.gap <- nlsy.3 %>%
+  group_by(region) %>%
+  summarize(male.count = sum(gender == "Male"),
+            female.count = sum(gender == "Female"),
+            income.gap = t.test(income ~ gender)$estimate[1] -
+              t.test(income ~ gender)$estimate[2],
+            lower = t.test(income ~ gender)$conf.int[1],
+            upper = t.test(income ~ gender)$conf.int[2],
+            is.significant = as.numeric(t.test(income ~ gender)$p.value < 0.05))
+region.inc.gap 
+
+region.inc.box <- ggplot(na.omit(nlsy.3), aes(x = region, y = income)) +
+  geom_boxplot() +
+  guides(fill = FALSE) +
+  scale_y_continuous(breaks = c(1000, 10000, 25000, 50000, 75000, 100000, 150000))  
+
+region.inc.bar <- ggplot(region.inc.gap, aes(x = region, y = income.gap, fill = is.significant)) +
+  geom_bar(stat = "identity") +
+  xlab("Region") + 
+  ylab("Income gap($)") +
+  ggtitle("Income gap between men and women, 
+          by region") + 
+  guides(fill = FALSE) +
+  geom_errorbar(aes(ymax = upper, ymin = lower), width = 0.1, size = 1) +
+  theme(text = element_text(size=10))
+
+grid.arrange(region.inc.box, region.inc.bar, ncol = 2)
+```
+
+It seems that `region` may not impact income gap. The income gap doesn't appear to be so different among various regions.
+
+**Impact of `family.poverty.status` on income gap**
+
+```{r, fig.width = 8, fig.height = 4}
+poverty.inc.gap <- nlsy.3 %>%
+  group_by(family.poverty.status) %>%
+  summarize(male.count = sum(gender == "Male"),
+            female.count = sum(gender == "Female"),
+            income.gap = t.test(income ~ gender)$estimate[1] -
+              t.test(income ~ gender)$estimate[2],
+            lower = t.test(income ~ gender)$conf.int[1],
+            upper = t.test(income ~ gender)$conf.int[2],
+            is.significant = as.numeric(t.test(income ~ gender)$p.value < 0.05))
+poverty.inc.gap 
+
+poverty.inc.box <- ggplot(na.omit(nlsy.3), aes(x = family.poverty.status, y = income)) +
+  geom_boxplot() +
+  guides(fill = FALSE) +
+  scale_y_continuous(breaks = c(1000, 10000, 25000, 50000, 75000, 100000, 150000))  
+
+poverty.inc.bar <- ggplot(poverty.inc.gap, aes(x = family.poverty.status, y = income.gap, fill =  is.significant)) +
+  geom_bar(stat = "identity") +
+  xlab("Family poverty status") + 
+  ylab("Income gap($)") +
+  ggtitle("Income gap between men and women,
+          by family poverty status") + 
+  guides(fill = FALSE)  +
+  geom_errorbar(aes(ymax = upper, ymin = lower), width = 0.1, size = 1) +
+  theme(text = element_text(size=10))
+
+grid.arrange(poverty.inc.box, poverty.inc.bar, ncol = 2)
+```
+
+It seems that `family.poverty.status` may impact income gap. The income gap is larger for  people whose family is in poverty status in teenager than those whose family isn't in poverty status.
+
+
+**Impact of `education` on income gap**
+
+```{r}
+ggplot(nlsy.3, aes(x = education, y = income, color = gender)) +
+  geom_point() +
+  stat_smooth(method = "lm") +
+  xlab("Education") + 
+  ylab("Income($)") +
+  ggtitle("Income between men and women, by education") 
+
+```
+
+It appears that `education` may impact income gap. The income gap between men and women appears to be larger as people get more years of education.
+
+**Impact of `job.number` on income gap**
+
+```{r}
+ggplot(nlsy.3, aes(x = job.number, y = income, color = gender)) +
+  geom_point() +
+  stat_smooth(method = "lm") +
+  xlab("number of jobs") + 
+  ylab("Income($)") +
+  ggtitle("Income between men and women, by number of jobs") 
+```
+
+It appears that `job.number` may impact income gap. Higher `job.number` increases males' income while dedreases females income. 
+
+
+**Impact of `family.size` on income gap**
+
+```{r}
+ggplot(nlsy.3, aes(x = family.size, y = income, color = gender)) +
+  geom_point() +
+  stat_smooth(method = "lm") +
+  xlab("Family size") + 
+  ylab("Income($)") +
+  ggtitle("Income between men and women, by family size") 
+```
+
+It appears that `family.size` may impact income gap. As family size increases, the income gap between males and females increases.
+
+So far, we've acquired basic understanding of variables. Next the report will identify variables that impact income gap using linear regression analysis. 
+
+
+### 2. Methodology
+
+#### Basic understanding using linear regression 
+
+We are now knowing most variables impact income, their coefficients are as follows.
+
+```{r}
+kable(coef(summary(nlsy.lm.2)), digits = c(0, 0, 2, 4))
+```
+
+The coefficient of `raceHispanic`, `marital.statusWidowed`, `regionWest` and `family.size` is not statistically significant at 0.05 level, which means these factor levels or variables don't associate with income.
+
+The interpretation of those coefficents are: Holding everything else constant - 
+
+  Females earn on average 17692 less than males.
+  
+  Black people earn on average 7011 less than people from other races.
+  
+  Never married people earn on average 9064 less than married people; separated people earn on average 4936 less than married people; divorced people earn on average 3363 less than married people.
+  
+  Increasing years education by 1 year on average increase 5721 in income.
+  
+  People living in North Cental earn on average 4831 less than people living in Northeast; people living in South earn on average 3229 less than people living in Northeast.
+  
+  People who have 1 more previous jobs earn 602 less than people who don't.
+  
+  People whose family is in poverty status in their teenager on average earn 6318 less than people whose family isn't in poverty status.
+
+
+#### Identifying variables that impact income gap
+
+To identify variables that impact income gap, we'll add interactions terms of `gender` and the specific variale, to see whether the interactions term is statistically significant or not using `anova` command.
+
+**Add interaction term on `race`**
+```{r}
+nlsy.lm.interact.1 <- update(nlsy.lm.2, . ~ . + gender*race)
+summary(nlsy.lm.interact.1)
+```
+
+```{r}
+# Testing significance of the interacton term with anova
+anova(nlsy.lm.2, nlsy.lm.interact.1)
+```
+
+The p-value is statistically significant, suggesting that the income gap between men and women does vary with `race`. 
+
+**Add interaction term on `marital.status`**
+```{r}
+nlsy.lm.interact.2 <- update(nlsy.lm.interact.1, . ~ . + gender*marital.status)
+summary(nlsy.lm.interact.2)
+```
+
+```{r}
+anova(nlsy.lm.interact.1, nlsy.lm.interact.2)
+```
+
+The p-value is statistically significant, suggesting that the income gap between men and women does vary with `marital.status`. 
+
+**Add interaction term on `job.number`**
+```{r}
+nlsy.lm.interact.3 <- update(nlsy.lm.interact.2, . ~ . + gender*job.number)
+summary(nlsy.lm.interact.3)
+anova(nlsy.lm.interact.2, nlsy.lm.interact.3)
+```
+
+The p-value is statistically significant, suggesting that the income gap between men and women does vary with `job.number`. 
+
+**Add interaction term on `family.size`**
+```{r}
+nlsy.lm.interact.4 <- update(nlsy.lm.interact.3, . ~ . + gender*family.size)
+summary(nlsy.lm.interact.4)
+anova(nlsy.lm.interact.3, nlsy.lm.interact.4)
+```
+
+The p-value is statistically significant, suggesting that the income gap between men and women does vary with `family.size`. 
+
+**Add interaction term on `family.poverty.status`**
+```{r}
+nlsy.lm.interact.5 <- update(nlsy.lm.interact.4, . ~ . + gender*family.poverty.status)
+summary(nlsy.lm.interact.5)
+anova(nlsy.lm.interact.4, nlsy.lm.interact.5)
+```
+
+The p-value is not statistically significant, suggesting that the income gap between men and women doesn't vary with `family.poverty.status`. So we remove this interaction term from regression model.
+
+**Add interaction term on `education`** 
+```{r}
+nlsy.lm.interact.6 <- update(nlsy.lm.interact.4, . ~ . + gender*education)
+summary(nlsy.lm.interact.6)
+anova(nlsy.lm.interact.4, nlsy.lm.interact.6)
+```
+
+The p-value is statistically significant, suggesting that the income gap between men and women does vary with `education`.
+
+**Add interaction term on `region`**
+```{r}
+nlsy.lm.interact.7 <- update(nlsy.lm.interact.6, . ~ . + gender*region)
+summary(nlsy.lm.interact.7)
+anova(nlsy.lm.interact.6, nlsy.lm.interact.7)
+```
+
+The p-value is not statistically significant, suggesting that the income gap between men and women doesn't vary with `region`. So we remove this interaction term from regression model.
+
+As a result, we now identify that `race`, `marital.status`, `education`, `job.number`, `family.size` impact income gap between men and women.
+
+
+
+### 3. Findings
+
+By excluding all missing values and topcoded values, the report explores the variables that impact income gap, and finally settled on the following model to explain income.
+
+
+#### Regression model
+
+`income` ~ gender + race + marital.status + education + region + 
+    job.number + family.poverty.status + family.size + gender:race + 
+    gender:marital.status + gender:job.number + gender:family.size + 
+    gender:education 
+
+All the variables we select are associated with `income`. In the model, the interaction term indicateds its impact on income gap. We'll further discuss the interpretation.
+
+
+#### Tabular summary of coefficients
+
+```{r}
+nlsy.lm.final <- nlsy.lm.interact.6
+kable(coef(summary(nlsy.lm.final)), digits = c(0, 0, 2, 4))
+```
+
+From p-values, we can get know that the income gap among people who are widowed is not significantly different from people who are married. The income gap will vary on other marital.status levels, and variables of race, job.number, education, family size.
+
+
+#### Diagnostic plots and analysis
+```{r}
+plot(nlsy.lm.final)
+```
+
+
+Now use 4 diagnostic plots to assess whether the linear model is appropriate. 
+
+**Residuals vs. Fitted** It appears that residuals have relatively constant variance against higher fitted values. We noticed slight none-linearity in the very beginning, but considering this scale locates at the negative values of fitted values, we may think the residuals and fitted values will be highly uncorrelated. So the linear model may be considered to be appropriate.
+
+**Normal QQ plot** The residuals appear to be highly normal but have a heavier tailed distribution. However, since we have a comparatively large sample size this should not cause many problems for inference. Therefore, the p-values are believable.
+
+**Scale-location plot** An increasing trend is detected when fitted values located between 0 and around 25000. The residuals appear more randomly spread along the x-axis as it passes around 25000. From this plot we may see a more discernable non-constant variance, which leads to the limitation of this model.
+
+**Residuals vs Leverage** Points with high residual (poorly described by the model) and high leverage (high influence on model fit) are outliers. There do not appear to be any clear outliers in our data.
+
+According to these diagnostic plots, this linear model we conclude is reasonable, but considering more variables will help us identify better appropriate model.
+
+
+#### Interpretation of coefficients
+
+Now let's interpret coefficients and investigate the possible meanings.
+
+**(1)** `genderFemale` means that holding everything else constant, females on average earn `r -round(coef(nlsy.lm.final)["genderFemale"], 0)` less than males.
+  
+**(2)** For coefficients of not-interaction terms of vairables that impact income gap ( `raceHispanic`, `raceBlack`, `marital.statusNever Married`, `marital.statusSeparated`, `marital.statusDivorced`, `marital.statusWidowed`, `education`, `job.number`, `family.size`), they represent the income gap between *males* in specific groups compared to the baseline. For example, `raceHispanic` means holding everything else constant, males of hispanic race on average earn `r -round(coef(nlsy.lm.final)["raceHispanic"], 0)` less than males from other races. Similarily, we can interpret others as: **Holding everything else constant, on average -**
+  
+  Black males earn 11032 less than other race mals. Never married males earn 17389 less than married males, eparated males earn 11212 less than married males, divorced males earn 9953 less than married males, the gap between widowed and married males is not significant. Males who have 1 more year of education earn 5986 more, who have 1 more previous job earn 728 less, who have 1 more family member earn 1430 more.  
+
+  
+**(3)** Since `region` and `family. poverty.status` doesn't impact gap, the related coefficients represent the same gap between *males (or females)* in specific groups compared to the baseline. That is, **holding everything else constant, on average - **
+
+males (or females) living in North Central earn 5724 less than those in Northeast, who live in South earn 4091 than those in Northeast, who live in West earn 3320 less than those in Northwest. Similarily, males (or females) whose family is in poverty status eatn 6799 less than those whose family isn't in poverty status.
+
+  
+**(4)** If we want to identify the income difference between men and women in the same group, we should consider both `genderFemale` and interaction terms.
+  
+  As the baseline level for race here is "Other", the model tells us that the average income difference between men and women from other race with holding all other conditions same is:
+
+Estimated.income(Male, Other) - Estimated.income(Female, Other)
+
+= -`genderFemale` + 0 = `r -round(coef(nlsy.lm.final)["genderFemale"], 0)`
+
+For Black men and women with holding all other conditions same, their average income difference is: 
+
+Estimated.income(Male, Black) - Estimated.income(Female, Black)
+
+= -`genderFemale` - `genderFemale:raceBlack` = `r -round(coef(nlsy.lm.final)["genderFemale"], 0)` - `r round(coef(nlsy.lm.final)["genderFemale:raceBlack"], 0)`, which is a smaller gap compared to baseline
+
+  Therefore, what the **interaction terms** represent is the income gap of a specific group compared to the baseline. According to the coefficient table, we can interprete them as: **Holding everything else constant, on average -**
+  
+  Income gap between men and women is 6220 smaller among Hispanic people than other race people, and 7786 smaller among Black people than other race people. 
+  
+  Income gap between men and women is 18199 smaller among never-married people than married people, 10670 smaller among separated people than married people, and 11460 smaller among divorced people than married people. It doesn't varied significantly among widowed people compared to married people.
+  
+  Income gap between men and women is 443 smaller when the number of previous jobs increases by 1, 2454 larger when the family size increases by 1, and 831 larger when the years of education increase by 1.
+
+  We can think about what this interpretation reflects in the real world. Income gap varies on race, here we identify 3 levels, Black and Hispanic people have smaller income gap than other races, but the actual income level is also lower, which seems to be reanonable based on common sense. Marital status impacts income level. Married people on average earn more than other status, also appear to have larger income gap. Since wealth is a important foundation for making a family, married people may have more incomes. And for married people, women will be somewhat discriminated and don't earn much, which increases the income gap. Income gap varies on job numbers, higher job.number help mitigate income gap. Previously, we found job.number impacts income negatively. For people having worked on more jobs, they tend to not have a steady working environment and earn less, then the gap will be mitigated. Higher family size expands income gap, it may caused by that people having larger family size on average earn more to support the whole family, so as size increases, the gap may become larger for fewer earners. Finally, higher education level expands income gap. It's interesting, since we commonly suppose a positive correlation between education and income. This result may enable us to consider for more other variables and test the model in the future.
+
+
+### 4. Discussion
+
+#### Summarize main conclusions
+
+In summary, the report finds that the income gap varied on race, marital status, number of previous jobs, family size, and years of education. Region of current residence and family poverty status don't impact income gap significantly. 
+
+Black and Hispanic people have smaller income gap between men and women compared to other race people. Married people have larger income gap than never married, separated and divorced people. People with higher number of previous jobs have smaller income gap. People with larger family have larger income gap. The finding also shows higher education expands the income gap between men and women, which is interesting for us to take further consideration.
+
+
+#### Discuss potential limitations
+
+From the diagnostic plots we may find this regression model is not perfect and needs improvement. Some effects of coeffiencts don't behave as we may suppose. And it seems that the model doesn't expain well for lower-income people.
+
+Because we rull out missing values and topcoded values, with the left data, we may not come to get the generalzed conclusion that not well fits the real situation. Also there may exist confounders that we didn't control. For example, drug use, crime history, whether people are from south or not may could be included for analysis.
+
+#### Confidence of analysis
+
+Though we have our variables statistically significant in this model, but it doesn't seem perfect appropriate with reference to diagnostic plots. Considering it reveals information and insights that potentially correspond to the reality, I think this model is somewhat believable and provides us with some understanding of how income gap is impacted. Thus, for pocily makers, they could consider implementing policies related to racial equality.
+
